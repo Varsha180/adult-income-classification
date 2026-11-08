@@ -1,0 +1,6 @@
+ML Model Name,Best CV F1,Best Parameters
+Logistic Regression,0.6813308144479282,"{'classifier__C': 3.0, 'classifier__class_weight': 'balanced'}"
+Decision Tree,0.6766181058448767,"{'classifier__class_weight': 'balanced', 'classifier__max_depth': 12, 'classifier__min_samples_leaf': 5, 'classifier__min_samples_split': 2}"
+KNN,0.6509802813910498,"{'classifier__n_neighbors': 15, 'classifier__p': 2, 'classifier__weights': 'uniform'}"
+Naive Bayes,0.5167049263506261,{'classifier__var_smoothing': 1e-07}
+Support Vector Machine,Not calculated (single fit),"{'loss': 'hinge', 'alpha': 0.0001, 'class_weight': 'balanced', 'max_iter': 1000, 'tol': 0.001, 'early_stopping': True}"
