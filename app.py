@@ -47,6 +47,15 @@ EXPECTED_COLUMNS = [
     "income"
 ]
 
+NUMERIC_COLUMNS = [
+    "age",
+    "fnlwgt",
+    "education-num",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week"
+]
+
 st.set_page_config(
     page_title="Adult Income Classification",
     page_icon="📊",
@@ -56,8 +65,8 @@ st.set_page_config(
 st.title("Adult Census Income Classification")
 
 st.write(
-    "Upload your test dataset, select a machine learning model, "
-    "and evaluate its classification performance."
+    "Upload your test dataset, select a trained machine learning "
+    "classifier, and evaluate its performance."
 )
 
 
@@ -71,40 +80,25 @@ def load_model(model_path):
 
 
 # --------------------------------------------------
-# 3. Target Encoding
+# 3. Encode Income Target
 # --------------------------------------------------
 
 def encode_target(values):
-
-    if pd.api.types.is_numeric_dtype(values):
-        encoded = values.astype(int)
-
-        if not encoded.isin([0, 1]).all():
-            raise ValueError(
-                "Numeric income labels must contain only 0 and 1."
-            )
-
-        return encoded
 
     mapping = {
         "<=50K": 0,
         ">50K": 1,
         "<=50K.": 0,
-        ">50K.": 1
+        ">50K.": 1,
+        "0": 0,
+        "1": 1
     }
 
-    encoded = (
+    return (
         values.astype(str)
         .str.strip()
         .map(mapping)
     )
-
-    if encoded.isna().any():
-        raise ValueError(
-            "Invalid income labels. Expected <=50K or >50K."
-        )
-
-    return encoded.astype(int)
 
 
 # --------------------------------------------------
@@ -114,27 +108,28 @@ def encode_target(values):
 st.header("1. Upload Test Dataset")
 
 uploaded_file = st.file_uploader(
-    "Upload your test dataset (CSV)",
+    "Upload test dataset (CSV)",
     type=["csv"],
-    help="Upload only the test dataset. Do not upload training data."
+    help="Upload only the test dataset. Training data is not required."
 )
 
 if uploaded_file is None:
     st.info("Please upload your test dataset to continue.")
     st.stop()
 
+
 try:
 
-    # Read CSV without automatically converting '?' to NaN
+    # Read CSV
     data = pd.read_csv(
         uploaded_file,
         keep_default_na=False
     )
 
-    # Remove accidental spaces from column names
+    # Remove unwanted spaces from column names
     data.columns = data.columns.str.strip()
 
-    # Validate dataset columns
+    # Validate columns
     missing_columns = [
         col for col in EXPECTED_COLUMNS
         if col not in data.columns
@@ -145,109 +140,187 @@ try:
         if col not in EXPECTED_COLUMNS
     ]
 
-    if missing_columns:
-        st.error(
-            f"Missing required columns: {missing_columns}"
-        )
+    if missing_columns or extra_columns:
+
+        if missing_columns:
+            st.error(f"Missing columns: {missing_columns}")
+
+        if extra_columns:
+            st.error(f"Unexpected columns: {extra_columns}")
+
         st.stop()
 
-    if extra_columns:
-        st.error(
-            f"Unexpected columns found: {extra_columns}"
-        )
-        st.stop()
-
-    # Arrange columns in expected order
-    data = data[EXPECTED_COLUMNS]
+    # Maintain expected column order
+    data = data[EXPECTED_COLUMNS].copy()
 
     if data.empty:
         st.error("The uploaded dataset is empty.")
         st.stop()
 
+    # Remove surrounding whitespace from string values
+    for column in data.select_dtypes(include=["object"]).columns:
+        data[column] = data[column].str.strip()
+
     # --------------------------------------------------
-    # 5. Missing Value Analysis
+    # 5. Identify Invalid Records
     # --------------------------------------------------
 
-    st.subheader("Dataset Validation")
+    # Check actual null values
+    null_mask = data.isnull().any(axis=1)
 
-    # Actual null values
-    null_counts = data.isnull().sum()
-
-    # Blank and whitespace-only values
-    blank_counts = (
+    # Check blank values
+    blank_mask = (
         data.astype("string")
-        .apply(
-            lambda col: col.str.strip().eq("").sum()
-        )
+        .apply(lambda col: col.str.strip().eq(""))
+        .any(axis=1)
     )
 
-    # '?' values
-    question_counts = (
+    # Check '?' placeholders
+    question_mask = (
         data.astype("string")
-        .apply(
-            lambda col: col.str.strip().eq("?").sum()
+        .apply(lambda col: col.str.strip().eq("?"))
+        .any(axis=1)
+    )
+
+    # Check invalid numeric values
+    numeric_invalid_mask = pd.Series(
+        False,
+        index=data.index
+    )
+
+    for column in NUMERIC_COLUMNS:
+
+        converted = pd.to_numeric(
+            data[column],
+            errors="coerce"
         )
+
+        numeric_invalid_mask |= converted.isna()
+
+        data[column] = converted
+
+    # Validate income labels
+    encoded_income = encode_target(data["income"])
+
+    invalid_target_mask = encoded_income.isna()
+
+    # Combine all invalid conditions
+    invalid_mask = (
+        null_mask
+        | blank_mask
+        | question_mask
+        | numeric_invalid_mask
+        | invalid_target_mask
     )
 
-    missing_summary = pd.DataFrame({
-        "Null Values": null_counts,
-        "Blank Values": blank_counts,
-        "'?' Values": question_counts
-    })
+    # --------------------------------------------------
+    # 6. Separate Valid and Invalid Records
+    # --------------------------------------------------
 
-    st.dataframe(
-        missing_summary,
-        use_container_width=True
+    invalid_records = data[invalid_mask].copy()
+
+    valid_data = data[~invalid_mask].copy()
+
+    # --------------------------------------------------
+    # 7. Display Dataset Validation
+    # --------------------------------------------------
+
+    st.divider()
+
+    st.subheader("2. Dataset Validation")
+
+    total_records = len(data)
+    valid_records_count = len(valid_data)
+    excluded_records_count = len(invalid_records)
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Total Records",
+        total_records
     )
 
-    total_missing = (
-        null_counts.sum()
-        + blank_counts.sum()
-        + question_counts.sum()
+    col2.metric(
+        "Valid Records",
+        valid_records_count
     )
 
-    if total_missing > 0:
+    col3.metric(
+        "Excluded Records",
+        excluded_records_count
+    )
+
+    if excluded_records_count > 0:
 
         st.warning(
-            f"Dataset contains {total_missing} missing or "
-            "invalid entries. Please check the dataset."
+            f"{excluded_records_count} records contain missing "
+            "or invalid values. These records will be excluded "
+            "from model evaluation."
+        )
+
+        with st.expander("View Excluded Records"):
+
+            st.dataframe(
+                invalid_records,
+                use_container_width=True
+            )
+
+    else:
+
+        st.success(
+            "No invalid records found. All records are valid."
+        )
+
+    if valid_data.empty:
+
+        st.error(
+            "No valid records available for model evaluation."
         )
 
         st.stop()
 
-    st.success("Dataset uploaded and validated successfully!")
+    st.success(
+        f"Proceeding with {valid_records_count} valid records."
+    )
 
-    # Dataset information
-    col1, col2 = st.columns(2)
+    # Preview valid dataset
+    with st.expander("View Valid Test Dataset"):
 
-    col1.metric("Total Test Records", len(data))
-    col2.metric("Total Features", len(EXPECTED_COLUMNS) - 1)
+        st.dataframe(
+            valid_data,
+            use_container_width=True
+        )
 
-    with st.expander("View Uploaded Dataset"):
-        st.dataframe(data, use_container_width=True)
+    # Prepare target and features
+    X_test = valid_data.drop(columns=["income"])
+
+    y_test = (
+        encode_target(valid_data["income"])
+        .astype(int)
+    )
 
 except Exception as e:
 
-    st.error(f"Error reading dataset: {e}")
+    st.error(f"Dataset processing failed: {e}")
     st.stop()
 
 
 # --------------------------------------------------
-# 6. Model Selection
+# 8. Model Selection
 # --------------------------------------------------
 
 st.divider()
 
-st.header("2. Select Classification Model")
+st.header("3. Model Selection")
 
 model_name = st.selectbox(
-    "Choose a trained classifier",
+    "Choose a classification model",
     options=list(MODEL_FILES.keys())
 )
 
 
 # --------------------------------------------------
-# 7. Model Evaluation
+# 9. Model Evaluation
 # --------------------------------------------------
 
 if st.button("Evaluate Model", type="primary"):
@@ -265,28 +338,32 @@ if st.button("Evaluate Model", type="primary"):
 
     try:
 
+        # Load selected model
         model = load_model(str(model_path))
-
-        # Separate input features and target
-        X_test = data.drop(columns=["income"])
-        y_test = encode_target(data["income"])
 
         # Generate predictions
         y_pred = model.predict(X_test)
 
-        # Ensure predictions are binary
-        y_pred = pd.Series(y_pred).astype(int)
+        # Convert predictions to binary labels
+        y_pred = encode_target(
+            pd.Series(y_pred)
+        )
 
-        if not y_pred.isin([0, 1]).all():
+        if y_pred.isna().any():
             raise ValueError(
-                "The model returned unexpected class labels."
+                "The model returned invalid prediction labels."
             )
 
+        y_pred = y_pred.astype(int)
+
         # --------------------------------------------------
-        # 8. Evaluation Metrics
+        # 10. Evaluation Metrics
         # --------------------------------------------------
 
-        accuracy = accuracy_score(y_test, y_pred)
+        accuracy = accuracy_score(
+            y_test,
+            y_pred
+        )
 
         precision = precision_score(
             y_test,
@@ -308,24 +385,43 @@ if st.button("Evaluate Model", type="primary"):
 
         st.divider()
 
-        st.header("3. Evaluation Metrics")
+        st.header("4. Model Evaluation Metrics")
 
-        st.caption(f"Selected Model: {model_name}")
+        st.write(f"**Selected Model:** {model_name}")
+
+        st.write(
+            f"**Records evaluated:** {len(X_test)}"
+        )
 
         col1, col2, col3, col4 = st.columns(4)
 
-        col1.metric("Accuracy", f"{accuracy:.4f}")
-        col2.metric("Precision", f"{precision:.4f}")
-        col3.metric("Recall", f"{recall:.4f}")
-        col4.metric("F1-Score", f"{f1:.4f}")
+        col1.metric(
+            "Accuracy",
+            f"{accuracy:.4f}"
+        )
+
+        col2.metric(
+            "Precision",
+            f"{precision:.4f}"
+        )
+
+        col3.metric(
+            "Recall",
+            f"{recall:.4f}"
+        )
+
+        col4.metric(
+            "F1-Score",
+            f"{f1:.4f}"
+        )
 
         # --------------------------------------------------
-        # 9. Confusion Matrix
+        # 11. Confusion Matrix
         # --------------------------------------------------
 
         st.divider()
 
-        st.header("4. Confusion Matrix")
+        st.header("5. Confusion Matrix")
 
         cm = confusion_matrix(
             y_test,
@@ -335,7 +431,10 @@ if st.button("Evaluate Model", type="primary"):
 
         cm_df = pd.DataFrame(
             cm,
-            index=["Actual <=50K", "Actual >50K"],
+            index=[
+                "Actual <=50K",
+                "Actual >50K"
+            ],
             columns=[
                 "Predicted <=50K",
                 "Predicted >50K"
@@ -348,30 +447,47 @@ if st.button("Evaluate Model", type="primary"):
         )
 
         # --------------------------------------------------
-        # 10. Classification Report
+        # 12. Classification Report
         # --------------------------------------------------
 
-        st.header("5. Classification Report")
+        st.header("6. Classification Report")
 
         report = classification_report(
             y_test,
             y_pred,
             labels=[0, 1],
-            target_names=["<=50K", ">50K"],
+            target_names=[
+                "<=50K",
+                ">50K"
+            ],
             output_dict=True,
             zero_division=0
         )
 
-        report_df = pd.DataFrame(report).transpose()
+        report_df = pd.DataFrame(
+            report
+        ).transpose()
 
         st.dataframe(
             report_df.round(4),
             use_container_width=True
         )
 
+        # --------------------------------------------------
+        # 13. Final Status
+        # --------------------------------------------------
+
         st.success(
             f"{model_name} evaluation completed successfully!"
         )
+
+        if excluded_records_count > 0:
+
+            st.info(
+                f"Note: {excluded_records_count} invalid records "
+                "were excluded. Metrics were calculated using "
+                f"the remaining {valid_records_count} records."
+            )
 
     except Exception as e:
 
